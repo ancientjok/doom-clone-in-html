@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>edge</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #111;
+            color: #0f0;
+        }
+        #levelCreator, #gameView {
+            display: none;
+        }
+        #levelCreator {
+            display: grid;
+            grid-template-columns: repeat(32, 15px);
+            gap: 1px;
+            background-color: #222;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px #0f0;
+        }
+        
+        .cell {
+            width: 15px;
+            height: 15px;
+            background-color: #000;
+            border: 1px solid #0f0;
+            cursor: pointer;
+            transition: background-color 0.1s;
+        }
+        .wall { background-color: #800; }
+        .player { background-color: #00f; }
+        .enemy { background-color: #0f0; }
+        .item { background-color: #ff0; }
+        .door { background-color: #840; }
+        #controls, #elementSelector {
+            margin-top: 20px;
+            text-align: center;
+        }
+        button {
+            background-color: #333;
+            color: #0f0;
+            border: 1px solid #0f0;
+            padding: 5px 10px;
+            margin: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0f0;
+            color: #000;
+        }
+        #gameView {
+            width: 800px;
+            height: 600px;
+            background-color: #000;
+            position: relative;
+            overflow: hidden;
+        }
+        .wall3d {
+            position: absolute;
+            background-color: #800;
+            border: 1px solid #f00;
+        }
+        .sprite {
+            position: absolute;
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+        }
+        #playerStats {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #0f0;
+            font-size: 18px;
+        }
+        #minimap {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 128px;
+            height: 128px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border: 1px solid #0f0;
+        }
+        #weapon {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 200px;
+            height: 200px;
+            background-image: url('weapon.png');
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: bottom right;
+        }
+        #statusBars {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 200px;
+          }
+          
+          #healthBar, #ammoBar {
+            width: 100%;
+            height: 20px;
+            background-color: #333;
+            margin-bottom: 5px;
+            border: 1px solid #0f0;
+          }
+          
+          #healthFill, #ammoFill {
+            height: 100%;
+            width: 100%;
+            transition: width 0.3s ease-in-out;
+          }
+          
+          #healthFill {
+            background-color: #f00;
+          }
+          
+          #ammoFill {
+            background-color: #ff0;
+          }
+    </style>
+</head>
+<body>
+    <div id="mainMenu">
+        <h1>DOOM 2.0</h1>
+        <button onclick="showCampaign()">Campaign</button>
+        <button onclick="setMode('random')">Random Level</button>
+        <button onclick="setMode('create')">Map Maker</button>
+      </div>
+      
+      <div id="campaignMenu" style="display: none;">
+        <h2>Campaign</h2>
+        <div id="levelList"></div>
+        <button onclick="showMainMenu()">Back</button>
+      </div>
+    <div id="levelCreator"></div>
+    <div id="gameView">
+        <div id="playerStats"></div>
+        <canvas id="minimap"></canvas>
+        <div id="weapon"></div>
+    </div>
+    <div id="statusBars">
+        <div id="healthBar">
+          <div id="healthFill"></div>
+        </div>
+        <div id="ammoBar">
+          <div id="ammoFill"></div>
+        </div>
+      </div>
+    <div id="elementSelector">
+        <button onclick="setCurrentElement('wall')">Wall</button>
+        <button onclick="setCurrentElement('player')">Player</button>
+        <button onclick="setCurrentElement('enemy')">Enemy</button>
+        <button onclick="setCurrentElement('item')">Item</button>
+        <button onclick="setCurrentElement('door')">Door</button>
+        <button onclick="setCurrentElement('')">Erase</button>
+    </div>
+    <div id="controls">
+        <button onclick="playCurrentLevel()">Play Level</button>
+        <button onclick="clearLevel()">Clear Level</button>
+        <button onclick="randomLevel()">Random Level</button>
+        <button onclick="saveLevel()">Save Level</button>
+        <button onclick="loadLevel()">Load Level</button>
+    </div>
+
+    <script>
+        const GRID_SIZE = 32;
+        const CELL_SIZE = 10;
+        const GAME_WIDTH = 800;
+        const GAME_HEIGHT = 600;
+        const FOV = Math.PI / 3;
+        const NUM_RAYS = 400;
+        const WALL_HEIGHT = 500;
+        const MAX_DEPTH = 20;
+        const PLAYER_SIZE = 0.2;
+
+        let currentElement = 'wall';
+        let levelData = [];
+        let player = { x: 0, y: 0, angle: 0, health: 100, ammo: 50 };
+        let sprites = [];
+        let gameLoop;
+        let lastTime = 0;
+        let isPaused = false;
+        let doors = [];
+        let isWeaponFiring = false;
+        let weaponFireTimeout;
+
+        const keys = {};
+
+        const hurtSound = new Audio('hurt.mp3');
+        const shotSound = new Audio('shot.mp3');
+
+        const levelCreator = document.getElementById('levelCreator');
+        const gameView = document.getElementById('gameView');
+        const playerStats = document.getElementById('playerStats');
+        const minimapCanvas = document.getElementById('minimap');
+        const minimapCtx = minimapCanvas.getContext('2d');
+        const weapon = document.getElementById('weapon');
+
+        const campaignLevels = [    
+  {
+    name: "Level 1: The Entrance",
+    data: `
+WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+W..............................W
+W.....E..........E.............W
+W..............................W
+W...WWWWWW......WWWWWW.........W
+W...W................W.........W
+W...W................W.........W
+W...W........P.......W.........W
+W...W................W.........W
+W...W................W.........W
+W...WWWWWW......WWWWWW.........W
+W..............D...............W
+W..............................W
+W.....E..........E.............W
+W..............................W
+W...WWWWWW......WWWWWW.........W
+W...W................W.........W
+W...W................W.........W
+W...W................W.........W
+W...W................W.........W
+W...W................W.........W
+W...WWWWWW......WWWWWW.........W
+W..............................W
+W..............................W
+W.....I...........I............W
+W..............................W
+WWWWWWWWWWWWDDWWWWWWWWWWWWWWWWWW
+W..............................W
+W..............................W
+W..............................W
+W..............................W
+WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+`.replace(/\s/g, '')
+  },
+];
+
+/*
+        const campaignLevels = [    
+        {
+          name: "Level 1: The Entrance",
+          data: [
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "W.....E..........E.............W",
+            "W..............................W",
+            "W...WWWWWW......WWWWWW.........W",
+            "W...W................W.........W",
+            "W...W................W.........W",
+            "W...W........P.......W.........W",
+            "W...W................W.........W",
+            "W...W................W.........W",
+            "W...WWWWWW......WWWWWW.........W",
+            "W..............D...............W",
+            "W..............................W",
+            "W.....E..........E.............W",
+            "W..............................W",
+            "W...WWWWWW......WWWWWW.........W",
+            "W...W................W.........W",
+            "W...W................W.........W",
+            "W...W................W.........W",
+            "W...W................W.........W",
+            "W...W................W.........W",
+            "W...WWWWWW......WWWWWW.........W",
+            "W..............................W",
+            "W..............................W",
+            "W.....I...........I............W",
+            "W..............................W",
+            "WWWWWWWWWWWWDDWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "W..............................W",
+            "W..............................W",
+            "W..............................W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          ].join("")
+        },
+        {
+          name: "Level 2: The Maze",
+          data: [
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "WP.W........W........W........WW",
+            "W..W........W........W........WW",
+            "W..W..WWWW..W..WWWW..W..WWWW..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W..D..D..D..D..D..D..D..D..W..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W.EW..W..W..W..W..W..W..W..W..WW",
+            "W..W..W..W..W..W..W..W..W..W..WW",
+            "W..WWWW..WWWW..WWWW..WWWW..W..WW",
+            "W.I............................W",
+            "WWWWWWW..WWWWWWWWWWWWWWWWWWWW.WW",
+            "W..............................W",
+            "W.WWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "WWWWWWWWWWWWWWWWWWWW.WWWWWWWW.WW",
+            "WE.............................W",
+            "W.WWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWW.WWW",
+            "W..............................W",
+            "W.WWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W...............E..............W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWW.WWW",
+            "W.I............................W",
+            "W.WWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          ].join("")
+        },
+        {
+          name: "Level 3: The Arena",
+          data: [
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "W...WWWWWWWWWWWWWWWWWWWWWWW....W",
+            "W...W..........................W",
+            "W...W...E....E.........E......DW",
+            "W...W..........................W",
+            "W...W...WWWWWWWW...WWWWWWW.....W",
+            "W...W...W......W...W.....W.....W",
+            "W...W...W..P...W...W.....W.....W",
+            "W...W...W......W...W.....W.....W",
+            "W...W...WWWWWWWW...W.....W.....W",
+            "W.I.D..............W.....W.....W",
+            "W...W...............D....W.....W",
+            "W...WWWWWWWWWWWWWWWWWWWWWW.....W",
+            "W..............................W",
+            "W..............................W",
+            "W...E..........E...............W",
+            "W..............................W",
+            "W..............................W",
+            "WWWWWWWWWWWWW....WWWWWWWWWWWWWWW",
+            "W.............D..............I.W",
+            "W..............................W",
+            "W..............................W",
+            "W........WWWWWWWWWWWWWW........W",
+            "W........W..........EW........DW",
+            "W........W...........W.........W",
+            "W........W...........W.........W",
+            "W........W...........W.........W",
+            "W........WWWWWWWWWWWWW.........W",
+            "W..............................W",
+            "W.....E........................W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          ].join("")
+        },
+        {
+          name: "Level 4: The Gauntlet",
+          data: [
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "WP.............................W",
+            "WWWWWWW.WWWWWWW.WWWWWWW.WWWWWW.W",
+            "W.......W.......W.......W.....DW",
+            "W.......W.......W.......W......W",
+            "W...E...W...E...W...E...W...E..W",
+            "W.......W.......W.......W......W",
+            "W.......W.......W.......W......W",
+            "WWWWWWW.WWWWWWW.WWWWWWW.WWWWWW.W",
+            "W..............................W",
+            "W.WWWWWW.WWWWWW.WWWWWW.WWWWWW..W",
+            "W.W.........I...........W......W",
+            "W.W..........................D.W",
+            "W.W....WWWWWWWWWWWWWWW...W....WW",
+            "W.W....W...........E.W...W....WW",
+            "W.W....W.............W...W....WW",
+            "W.W....W.............W...W....WW",
+            "W.W....WWWWWWWWWWWWWWW...W....WW",
+            "W.W..........................D.W",
+            "W.W.......................W....W",
+            "W.WWWWWWWWWWWWWWWWWWWWWWWWW....W",
+            "W..............................W",
+            "WWWWWWW.WWWWWWW.WWWWWWW.WWWWWW.W",
+            "WE......W.......W.......W.....DW",
+            "W.......W.......W.......W......W",
+            "W...E...W...E...W...E...W...E..W",
+            "W.......W.......W.......W......W",
+            "W.......W.......W.......W......W",
+            "WWWWWWW.WWWWWWW.WWWWWWW.WWWWWW.W",
+            "W..I...........................W",
+            "W..............................W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          ].join("")
+        },
+        {
+          name: "Level 5: The Final Challenge",
+          data: [
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+            "W..............................W",
+            "W...WWWWWWWWWWWDDWWWWWWWWWWW...W",
+            "W...W..........................W",
+            "W...W...E....E.........E......DW",
+            "W...W..........................W",
+            "W...W...WWWWWWWW...WWWWWWW.....W",
+            "W...W...W......W...W.....W.....W",
+            "WP..W...W......W...W.....W.....W",
+            "W...W...W......W...W.....W.....W",
+            "W...W...WWWWWWWW...W.....W.....W",
+            "W.I.D..............W.....W.....W",
+            "W...W...............D....W.....W",
+            "W...WWWWWWWWWWWWWWWWWWWWWW.....W",
+            "W..............................W",
+            "W...WWWW..WWWW..WWWW..WWWW.....W",
+            "W...WE.W..W..W..W..W..W..W.....W",
+            "W...W..W..W..W..W..W..W..W.....W",
+            "W...W..W..W..W..W..W..W.EW.....W",
+            "W...WWWW..WWWW..WWWW..WWWW.....W",
+            "W.............D...............IW",
+            "W..............................W",
+            "W..............................W",
+            "W........WWWWWWWWWWWWWW........W",
+            "W........W..........EW........DW",
+            "W........W...........W.........W",
+            "W........W...........W.........W",
+            "W........W...........W.........W",
+            "W........WWWWWWWWWWWWW.........W",
+            "W..............................W",
+            "W.....E........................W",
+            "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"
+          ].join("")
+        }
+      ]; 
+      
+      */
+
+        document.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+            if (e.code === 'Space') {
+                e.preventDefault();
+            }
+        });
+
+        document.addEventListener('keydown', (e) => keys[e.code] = true);
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        function showMainMenu() {
+            document.getElementById('mainMenu').style.display = 'block';
+            document.getElementById('campaignMenu').style.display = 'none';
+            document.getElementById('levelCreator').style.display = 'none';
+            document.getElementById('gameView').style.display = 'none';
+          }
+          
+          function showCampaign() {
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('campaignMenu').style.display = 'block';
+            
+            const levelList = document.getElementById('levelList');
+            levelList.innerHTML = '';
+            campaignLevels.forEach((level, index) => {
+              const button = document.createElement('button');
+              button.textContent = level.name;
+              button.onclick = () => startCampaignLevel(index);
+              levelList.appendChild(button);
+            });
+          }
+          
+          function startCampaignLevel(levelIndex) {
+            const level = campaignLevels[levelIndex];
+            levelData = level.data.split('');
+            setMode('play');
+          }
+          
+        function setMode(mode) {
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('campaignMenu').style.display = 'none';
+            document.getElementById('levelCreator').style.display = 'none';
+            document.getElementById('gameView').style.display = 'none';
+            document.getElementById('elementSelector').style.display = 'none';
+            document.getElementById('controls').style.display = 'none';
+          
+            if (mode === 'create') {
+              document.getElementById('levelCreator').style.display = 'grid';
+              document.getElementById('elementSelector').style.display = 'block';
+              document.getElementById('controls').style.display = 'block';
+              createGrid();
+            } else if (mode === 'play') {
+              document.getElementById('gameView').style.display = 'block';
+              startGame();
+            } else if (mode === 'random') {
+              randomLevel();
+              setMode('play');
+            }
+          }
+
+          function playCurrentLevel() {
+            levelData = Array.from(document.querySelectorAll('.cell'))
+              .map(cell => {
+                if (cell.classList.contains('wall')) return 'W';
+                if (cell.classList.contains('player')) return 'P';
+                if (cell.classList.contains('enemy')) return 'E';
+                if (cell.classList.contains('item')) return 'I';
+                if (cell.classList.contains('door')) return 'D';
+                return '.';
+              });
+            setMode('play');
+          }
+
+        function createGrid() {
+            levelCreator.innerHTML = '';
+            for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'cell';
+                cell.addEventListener('click', placeTile);
+                cell.addEventListener('mouseover', (e) => {
+                    if (e.buttons === 1) placeTile.call(cell);
+                });
+                levelCreator.appendChild(cell);
+            }
+        }
+
+        function setCurrentElement(element) {
+            currentElement = element;
+        }
+
+        function placeTile() {
+            this.className = 'cell ' + currentElement;
+        }
+
+        function clearLevel() {
+            document.querySelectorAll('.cell').forEach(cell => {
+                cell.className = 'cell';
+            });
+        }
+
+        function randomLevel() {
+            levelData = new Array(GRID_SIZE * GRID_SIZE).fill('.');
+            const rooms = [];
+            const numRooms = Math.floor(Math.random() * 3) + 3; 
+        
+            for (let i = 0; i < numRooms; i++) {
+                const roomWidth = Math.floor(Math.random() * 5) + 4;
+                const roomHeight = Math.floor(Math.random() * 5) + 4;
+                const startX = Math.floor(Math.random() * (GRID_SIZE - roomWidth));
+                const startY = Math.floor(Math.random() * (GRID_SIZE - roomHeight));
+        
+                generateRoom(startX, startY, roomWidth, roomHeight);
+                rooms.push({x: startX, y: startY, width: roomWidth, height: roomHeight});
+            }
+            
+            levelData = new Array(GRID_SIZE * GRID_SIZE).fill('.');
+
+            for (let i = 1; i < rooms.length; i++) {
+                connectRooms(rooms[i - 1], rooms[i]);
+            }
+        
+            const numEnemies = Math.floor(Math.random() * 5) + 3;
+            const numDoors = Math.floor(Math.random() * 3) + 1;
+        
+            const numItems = Math.floor(Math.random() * 3) + 2;
+            for (let i = 0; i < numItems; i++) {
+                const itemType = Math.random() < 0.5 ? 'IH' : 'IA';
+                addRandomElement(itemType);
+
+            for (let i = 0; i < numEnemies; i++) addRandomElement('enemy');
+            for (let i = 0; i < numItems; i++) addRandomElement('item');
+            for (let i = 0; i < numDoors; i++) addRandomElement('door');
+        
+            addRandomElement('player');
+        
+            updateGridDisplay();
+            setMode('play');
+            }
+        }
+        
+        function generateRoom(startX, startY, width, height) {
+            for (let y = startY; y < startY + height; y++) {
+                for (let x = startX; x < startX + width; x++) {
+                    if (x === startX || x === startX + width - 1 || y === startY || y === startY + height - 1) {
+                        levelData[y * GRID_SIZE + x] = 'wall';
+                    } else {
+                        levelData[y * GRID_SIZE + x] = '.';
+                    }
+                }
+            }
+        }
+        
+        function connectRooms(room1, room2) {
+            const startX = room1.x + Math.floor(room1.width / 2);
+            const startY = room1.y + Math.floor(room1.height / 2);
+            const endX = room2.x + Math.floor(room2.width / 2);
+            const endY = room2.y + Math.floor(room2.height / 2);
+        
+            for (let x = Math.min(startX, endX); x <= Math.max(startX, endX); x++) {
+                if (levelData[startY * GRID_SIZE + x] === 'wall') {
+                    levelData[startY * GRID_SIZE + x] = 'door';
+                } else {
+                    levelData[startY * GRID_SIZE + x] = '.';
+                }
+            }
+        
+            for (let y = Math.min(startY, endY); y <= Math.max(startY, endY); y++) {
+                if (levelData[y * GRID_SIZE + endX] === 'wall') {
+                    levelData[y * GRID_SIZE + endX] = 'door';
+                } else {
+                    levelData[y * GRID_SIZE + endX] = '.';
+                }
+            }
+        }
+        
+        function addRandomElement(elementType) {
+            let x, y;
+            do {
+                x = Math.floor(Math.random() * GRID_SIZE);
+                y = Math.floor(Math.random() * GRID_SIZE);
+            } while (levelData[y * GRID_SIZE + x] !== '.');
+        
+            levelData[y * GRID_SIZE + x] = elementType;
+        }
+        
+        function updateGridDisplay() {
+            const cells = document.querySelectorAll('.cell');
+            levelData.forEach((cell, index) => {
+                cells[index].className = 'cell ' + cell;
+            });
+        }
+
+        function saveLevel() {
+            const levelString = Array.from(document.querySelectorAll('.cell'))
+                .map(cell => cell.className.replace('cell ', ''))
+                .join('');
+            localStorage.setItem('savedLevel', levelString);
+            alert('Level saved!');
+        }
+
+        function loadLevel() {
+            const savedLevel = localStorage.getItem('savedLevel');
+            if (savedLevel) {
+                const cells = document.querySelectorAll('.cell');
+                savedLevel.split('').forEach((cellType, index) => {
+                    cells[index].className = 'cell ' + cellType;
+                });
+                alert('Level loaded!');
+            } else {
+                alert('No saved level found.');
+            }
+        }
+
+        function startGame() {
+            sprites = [];
+            doors = [];
+            
+            if (typeof levelData === 'string') {
+              levelData = levelData.split('');
+            }
+          
+            levelData.forEach((cell, index) => {
+              const x = index % GRID_SIZE;
+              const y = Math.floor(index / GRID_SIZE);
+              if (cell === 'P') {
+                player.x = x + 0.5;
+                player.y = y + 0.5;
+                levelData[index] = '.';
+              } else if (cell === 'E') {
+                sprites.push({x: x + 0.5, y: y + 0.5, type: 'E', health: 100});
+                levelData[index] = '.';
+              } else if (cell === 'I') {
+                sprites.push({x: x + 0.5, y: y + 0.5, type: 'I'});
+                levelData[index] = '.';
+              } else if (cell === 'D') {
+                doors.push({x: x, y: y, isOpen: false});
+              }
+            });
+          
+            player.health = 100;
+            player.ammo = 100;
+            player.angle = 0;
+            isPaused = false;
+            lastTime = performance.now();
+            gameLoop = requestAnimationFrame(update);
+          }
+
+        function update(time) {
+            if (isPaused) return;
+
+            const deltaTime = (time - lastTime) / 1000;
+            lastTime = time;
+
+            handleInput(deltaTime);
+            updateSprites(deltaTime);
+            checkItemCollection();
+            render();
+            updatePlayerStats();
+            renderMinimap();
+            checkGameOver();
+            checkVictory();
+
+            gameLoop = requestAnimationFrame(update);
+        }
+
+        function handleInput(deltaTime) {
+            const moveSpeed = 5 * deltaTime;
+            const rotSpeed = 3 * deltaTime;
+        
+            if (keys.KeyW || keys.ArrowUp) movePlayer(moveSpeed);
+            if (keys.KeyS || keys.ArrowDown) movePlayer(-moveSpeed);
+            if (keys.KeyA || keys.ArrowLeft) player.angle -= rotSpeed;
+            if (keys.KeyD || keys.ArrowRight) player.angle += rotSpeed;
+            if (keys.Space) shootWeapon();
+            if (keys.KeyE) checkDoorInteraction();
+        }
+
+        function movePlayer(distance) {
+            const newX = player.x + Math.cos(player.angle) * distance;
+            const newY = player.y + Math.sin(player.angle) * distance;
+
+            if (!isWall(newX, player.y)) player.x = newX;
+            if (!isWall(player.x, newY)) player.y = newY;
+        }
+
+        function isWall(x, y) {
+            const cellX = Math.floor(x);
+            const cellY = Math.floor(y);
+            if (cellX < 0 || cellX >= GRID_SIZE || cellY < 0 || cellY >= GRID_SIZE) {
+                return true;
+            }
+            const cell = levelData[cellY * GRID_SIZE + cellX];
+            return cell === 'wall' || (cell === 'door' && !doors.find(door => door.x === cellX && door.y === cellY).isOpen);
+        }
+
+        function updateSprites(deltaTime) {
+            sprites.forEach(sprite => {
+                if (sprite.type === 'enemy') {
+                    const dx = player.x - sprite.x;
+                    const dy = player.y - sprite.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (distance > 1) {
+                        const moveX = (dx / distance) * 0.5 * deltaTime;
+                        const moveY = (dy / distance) * 0.5 * deltaTime;
+                        
+                        if (!isWall(sprite.x + moveX, sprite.y)) {
+                            sprite.x += moveX;
+                        }
+                        if (!isWall(sprite.x, sprite.y + moveY)) {
+                            sprite.y += moveY;
+                        }
+                    }
+        
+                    if (distance < 0.5) {
+                        player.health -= 10 * deltaTime;
+                        playSound(hurtSound);
+                    }
+                }
+            });
+        
+            sprites = sprites.filter(sprite => sprite.type !== 'enemy' || sprite.health > 0);
+        }
+
+        function render() {
+            gameView.innerHTML = '';
+        
+            for (let i = 0; i < NUM_RAYS; i++) {
+                const rayAngle = player.angle - FOV / 2 + (i / NUM_RAYS) * FOV;
+                const [distance, wallType] = castRay(rayAngle);
+                const wallHeight = Math.min(WALL_HEIGHT / distance, GAME_HEIGHT);
+                const wall = document.createElement('div');
+                wall.className = 'wall3d';
+                wall.style.left = `${i * (GAME_WIDTH / NUM_RAYS)}px`;
+                wall.style.top = `${(GAME_HEIGHT - wallHeight) / 2}px`;
+                wall.style.width = `${GAME_WIDTH / NUM_RAYS + 1}px`;
+                wall.style.height = `${wallHeight}px`;
+                wall.style.backgroundColor = getWallColor(wallType, distance);
+                gameView.appendChild(wall);
+            }
+        
+            renderSprites();
+            gameView.appendChild(weapon);
+        }
+
+        function castRay(angle) {
+            let rayX = player.x;
+            let rayY = player.y;
+            const rayDirX = Math.cos(angle);
+            const rayDirY = Math.sin(angle);
+
+            let distance = 0;
+            while (distance < MAX_DEPTH) {
+                distance += 0.01;
+                rayX = player.x + rayDirX * distance;
+                rayY = player.y + rayDirY * distance;
+
+                const mapX = Math.floor(rayX);
+                const mapY = Math.floor(rayY);
+
+                if (mapX < 0 || mapX >= GRID_SIZE || mapY < 0 || mapY >= GRID_SIZE) {
+                    return [distance, 'W'];
+                }
+
+                const cellType = levelData[mapY * GRID_SIZE + mapX];
+                if (cellType === 'W' || cellType === 'D') {
+                    return [distance, cellType];
+                }
+            }
+
+            return [distance, 'W'];
+        }
+
+        function getWallColor(wallType, distance) {
+            const shade = Math.max(255 - distance * 20, 0);
+            if (wallType === 'wall') return `rgb(${shade}, 0, 0)`;
+            if (wallType === 'door') {
+                const doorObj = doors.find(door => door.x === Math.floor(rayX) && door.y === Math.floor(rayY));
+                return doorObj && doorObj.isOpen ? `rgb(${shade}, ${shade}, ${shade})` : `rgb(${shade}, ${shade / 2}, 0)`;
+            }
+            return `rgb(${shade}, ${shade}, ${shade})`;
+        }
+
+        function renderSprites() {
+            sprites.forEach(sprite => {
+                const dx = sprite.x - player.x;
+                const dy = sprite.y - player.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                const spriteAngle = Math.atan2(dy, dx) - player.angle;
+                const size = WALL_HEIGHT / distance;
+                
+                if (Math.abs(spriteAngle) < FOV / 2) {
+                    const spriteX = (spriteAngle / (FOV / 2)) * (GAME_WIDTH / 2) + GAME_WIDTH / 2 - size / 2;
+                    const spriteY = (GAME_HEIGHT - size) / 2;
+                    
+                    const spriteElement = document.createElement('div');
+                    spriteElement.className = 'sprite';
+                    spriteElement.style.left = `${spriteX}px`;
+                    spriteElement.style.top = `${spriteY}px`;
+                    spriteElement.style.width = `${size}px`;
+                    spriteElement.style.height = `${size}px`;
+                    spriteElement.style.backgroundImage = getSpriteImage(sprite.type);
+                    gameView.appendChild(spriteElement);
+                }
+            });
+        }
+
+        function getSpriteImage(type) {
+            if (type === 'E') return 'url("enemy.png")';
+            if (type === 'IH') return 'url("health.png")';
+            if (type === 'IA') return 'url("ammo_item.png")';
+            return '';
+          }
+
+        function updatePlayerStats() {
+            playerStats.innerHTML = `Health: ${Math.floor(player.health)} | Ammo: ${player.ammo}`;
+            
+            const healthFill = document.getElementById('healthFill');
+            const ammoFill = document.getElementById('ammoFill');
+            
+            healthFill.style.width = `${player.health}%`;
+            ammoFill.style.width = `${(player.ammo / 100) * 100}%`;
+          }
+
+        function playSound(sound) { 
+            sound.currentTime = 0;
+            sound.play();
+        }
+
+        function shootWeapon() {
+            if (player.ammo <= 0 || isWeaponFiring) return;
+        
+            player.ammo -= 1;
+            isWeaponFiring = true;
+            
+            weapon.style.backgroundImage = 'url("weaponfire.png")';
+            
+            clearTimeout(weaponFireTimeout);
+            weaponFireTimeout = setTimeout(() => {
+                weapon.style.backgroundImage = 'url("weapon.png")';
+                isWeaponFiring = false;
+            }, 1000);
+        
+            const shotAngle = player.angle;
+            const [hitDistance, hitType] = castRay(shotAngle);
+        
+            if (hitType === 'enemy') {
+                sprites = sprites.filter(sprite => {
+                    if (sprite.type === 'enemy') {
+                        const dx = sprite.x - player.x;
+                        const dy = sprite.y - player.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        if (distance <= hitDistance) {
+                            sprite.health -= 50;
+                            return sprite.health > 0;
+                        }
+                    }
+                    return true;
+                });
+            }
+        
+            playSound(shotSound);
+        }
+
+        function checkDoorInteraction() {
+            const cellX = Math.floor(player.x + Math.cos(player.angle) * PLAYER_SIZE);
+            const cellY = Math.floor(player.y + Math.sin(player.angle) * PLAYER_SIZE);
+            const door = doors.find(door => door.x === cellX && door.y === cellY);
+            if (door) {
+                door.isOpen = !door.isOpen;
+            }
+        }
+
+        function checkDoorInteraction() {
+            const interactionDistance = 1;
+            const dx = Math.cos(player.angle) * interactionDistance;
+            const dy = Math.sin(player.angle) * interactionDistance;
+            const checkX = Math.floor(player.x + dx);
+            const checkY = Math.floor(player.y + dy);
+        
+            const doorIndex = doors.findIndex(door => door.x === checkX && door.y === checkY);
+            if (doorIndex !== -1) {
+                doors[doorIndex].isOpen = !doors[doorIndex].isOpen;
+                levelData[checkY * GRID_SIZE + checkX] = doors[doorIndex].isOpen ? '.' : 'door';
+            }
+        }
+
+        function checkItemCollection() {
+            sprites = sprites.filter(sprite => {
+              if (sprite.type === 'I') {
+                const dx = player.x - sprite.x;
+                const dy = player.y - sprite.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance < 0.5) {
+                  if (Math.random() < 0.5) {
+                    player.health = Math.min(player.health + 25, 100);
+                    console.log("Collected health item");
+                  } else {
+                    player.ammo += 25;
+                    console.log("Collected ammo item");
+                  }
+                  updatePlayerStats();
+                  return false;
+                }
+              }
+              return true;
+            });
+          }
+
+        function renderMinimap() {
+            minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+            const cellSize = minimapCanvas.width / GRID_SIZE;
+            
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    const cell = levelData[y * GRID_SIZE + x];
+                    if (cell === 'W') minimapCtx.fillStyle = '#800';
+                    else if (cell === 'D') minimapCtx.fillStyle = '#840';
+                    else minimapCtx.fillStyle = '#000';
+                    minimapCtx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                }
+            }
+            
+            minimapCtx.fillStyle = '#00f';
+            minimapCtx.fillRect(player.x * cellSize - 2, player.y * cellSize - 2, 4, 4);
+        }
+
+        function checkGameOver() {
+            if (player.health <= 0) {
+              alert('Game Over!');
+              stopGame();
+              showMainMenu();
+            }
+          }
+          
+          function checkVictory() {
+            if (sprites.every(sprite => sprite.type !== 'E')) {
+              alert('Victory!');
+              stopGame();
+              showMainMenu();
+            }
+          }
+
+        function setMode(mode) {
+            if (mode === 'create') {
+                stopGame();
+                levelCreator.style.display = 'grid';
+                gameView.style.display = 'none';
+                document.getElementById('elementSelector').style.display = 'block';
+                document.getElementById('controls').style.display = 'block';
+                createGrid();
+            } else if (mode === 'play') {
+                levelCreator.style.display = 'none';
+                gameView.style.display = 'block';
+                document.getElementById('elementSelector').style.display = 'none';
+                document.getElementById('controls').style.display = 'none';
+                startGame();
+            }
+        }
+
+        createGrid();
+
+    /*    made by ancientjoke on github      */
+
+    </script>
+</body>
+</html>
